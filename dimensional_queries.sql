@@ -1,0 +1,254 @@
+USE dimensional_reporting_db;
+
+-- 1. Calculate total revenue
+SELECT SUM(revenue) AS total_revenue
+FROM fact_sales;
+
+-- 2. Product-wise revenue
+SELECT
+    p.product_name,
+    SUM(f.revenue) AS total_revenue
+FROM fact_sales f
+JOIN dim_product p
+    ON f.product_id = p.product_id
+GROUP BY p.product_id, p.product_name
+ORDER BY total_revenue DESC;
+
+-- 3. Category-wise revenue
+SELECT
+    p.category,
+    SUM(f.revenue) AS total_revenue
+FROM fact_sales f
+JOIN dim_product p
+    ON f.product_id = p.product_id
+GROUP BY p.category
+ORDER BY total_revenue DESC;
+
+-- 4. Customer-wise spending
+SELECT
+    c.customer_name,
+    SUM(f.revenue) AS total_spending
+FROM fact_sales f
+JOIN dim_customer c
+    ON f.customer_id = c.customer_id
+GROUP BY c.customer_id, c.customer_name
+ORDER BY total_spending DESC;
+
+-- 5. Rank products using RANK()
+SELECT
+    p.product_name,
+    SUM(f.revenue) AS total_revenue,
+    RANK() OVER (
+        ORDER BY SUM(f.revenue) DESC
+    ) AS revenue_rank
+FROM fact_sales f
+JOIN dim_product p
+    ON f.product_id = p.product_id
+GROUP BY p.product_id, p.product_name;
+
+-- 6. Rank customers using DENSE_RANK()
+SELECT
+    c.customer_name,
+    SUM(f.revenue) AS total_spending,
+    DENSE_RANK() OVER (
+        ORDER BY SUM(f.revenue) DESC
+    ) AS customer_rank
+FROM fact_sales f
+JOIN dim_customer c
+    ON f.customer_id = c.customer_id
+GROUP BY c.customer_id, c.customer_name;
+
+-- 7. Rank products within each category
+SELECT
+    p.category,
+    p.product_name,
+    SUM(f.revenue) AS total_revenue,
+    RANK() OVER (
+        PARTITION BY p.category
+        ORDER BY SUM(f.revenue) DESC
+    ) AS category_rank
+FROM fact_sales f
+JOIN dim_product p
+    ON f.product_id = p.product_id
+GROUP BY p.category, p.product_id, p.product_name;
+
+-- 8. Month-over-Month revenue comparison
+WITH monthly_sales AS (
+    SELECT
+        d.year_num,
+        d.month_num,
+        d.month_name,
+        SUM(f.revenue) AS revenue
+    FROM fact_sales f
+    JOIN dim_date d
+        ON f.date_id = d.date_id
+    GROUP BY
+        d.year_num,
+        d.month_num,
+        d.month_name
+),
+monthly_comparison AS (
+    SELECT
+        year_num,
+        month_num,
+        month_name,
+        revenue,
+        LAG(revenue) OVER (
+            ORDER BY year_num, month_num
+        ) AS previous_month_revenue
+    FROM monthly_sales
+)
+SELECT
+    year_num,
+    month_num,
+    month_name,
+    revenue,
+    previous_month_revenue,
+    revenue - previous_month_revenue AS revenue_change,
+    ROUND(
+        (revenue - previous_month_revenue)
+        / NULLIF(previous_month_revenue, 0) * 100,
+        2
+    ) AS growth_percentage
+FROM monthly_comparison
+ORDER BY year_num, month_num;
+
+-- 9. Revenue subtotals using ROLLUP
+SELECT
+    d.year_num,
+    p.category,
+    SUM(f.revenue) AS total_revenue
+FROM fact_sales f
+JOIN dim_date d
+    ON f.date_id = d.date_id
+JOIN dim_product p
+    ON f.product_id = p.product_id
+GROUP BY d.year_num, p.category WITH ROLLUP;
+
+-- 10. Previous purchase revenue using LAG()
+SELECT
+    c.customer_name,
+    d.full_date,
+    f.revenue,
+    LAG(f.revenue) OVER (
+        PARTITION BY f.customer_id
+        ORDER BY d.full_date
+    ) AS previous_purchase_revenue
+FROM fact_sales f
+JOIN dim_customer c
+    ON f.customer_id = c.customer_id
+JOIN dim_date d
+    ON f.date_id = d.date_id;
+
+-- 11. Next purchase revenue using LEAD()
+SELECT
+    c.customer_name,
+    d.full_date,
+    f.revenue,
+    LEAD(f.revenue) OVER (
+        PARTITION BY f.customer_id
+        ORDER BY d.full_date
+    ) AS next_purchase_revenue
+FROM fact_sales f
+JOIN dim_customer c
+    ON f.customer_id = c.customer_id
+JOIN dim_date d
+    ON f.date_id = d.date_id;
+
+-- 12. Divide customers into four spending groups
+WITH customer_sales AS (
+    SELECT
+        customer_id,
+        SUM(revenue) AS total_spending
+    FROM fact_sales
+    GROUP BY customer_id
+)
+SELECT
+    c.customer_name,
+    cs.total_spending,
+    NTILE(4) OVER (
+        ORDER BY cs.total_spending DESC
+    ) AS spending_quartile
+FROM customer_sales cs
+JOIN dim_customer c
+    ON cs.customer_id = c.customer_id;
+
+-- 13. Calculate running revenue totals
+WITH daily_sales AS (
+    SELECT
+        d.full_date,
+        SUM(f.revenue) AS revenue
+    FROM fact_sales f
+    JOIN dim_date d
+        ON f.date_id = d.date_id
+    GROUP BY d.full_date
+)
+SELECT
+    full_date,
+    revenue,
+    SUM(revenue) OVER (
+        ORDER BY full_date
+        ROWS BETWEEN UNBOUNDED PRECEDING
+        AND CURRENT ROW
+    ) AS running_total
+FROM daily_sales;
+
+-- 14. Find the top three products by revenue
+WITH ranked_products AS (
+    SELECT
+        p.product_name,
+        SUM(f.revenue) AS total_revenue,
+        DENSE_RANK() OVER (
+            ORDER BY SUM(f.revenue) DESC
+        ) AS product_rank
+    FROM fact_sales f
+    JOIN dim_product p
+        ON f.product_id = p.product_id
+    GROUP BY p.product_id, p.product_name
+)
+SELECT *
+FROM ranked_products
+WHERE product_rank <= 3;
+
+-- 15. Region-wise revenue
+SELECT
+    l.region,
+    SUM(f.revenue) AS total_revenue
+FROM fact_sales f
+JOIN dim_location l
+    ON f.location_id = l.location_id
+GROUP BY l.region
+ORDER BY total_revenue DESC;
+
+-- 16. Monthly revenue report
+SELECT
+    d.year_num,
+    d.month_num,
+    d.month_name,
+    SUM(f.revenue) AS revenue
+FROM fact_sales f
+JOIN dim_date d
+    ON f.date_id = d.date_id
+GROUP BY d.year_num, d.month_num, d.month_name
+ORDER BY d.year_num, d.month_num;
+
+-- 17. Revenue by customer segment
+SELECT
+    c.customer_segment,
+    SUM(f.revenue) AS total_revenue
+FROM fact_sales f
+JOIN dim_customer c
+    ON f.customer_id = c.customer_id
+GROUP BY c.customer_segment;
+
+-- 18. Revenue by region and product category
+SELECT
+    l.region,
+    p.category,
+    SUM(f.revenue) AS total_revenue
+FROM fact_sales f
+JOIN dim_location l
+    ON f.location_id = l.location_id
+JOIN dim_product p
+    ON f.product_id = p.product_id
+GROUP BY l.region, p.category WITH ROLLUP;
